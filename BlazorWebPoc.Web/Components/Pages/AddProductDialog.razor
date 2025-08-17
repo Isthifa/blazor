@@ -1,0 +1,41 @@
+﻿@using BlazorWebPoc.Web.Models
+@using MudBlazor
+@page "/AddProduct"
+<h3>AddProductDialog</h3>
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.h6">Enter Product Details</MudText>
+
+        <MudTextField @bind-Value="_product.Name" Label="Product Name" Required="true" />
+        <MudTextField @bind-Value="_product.Description" Label="Description" />
+        <MudTextField @bind-Value="_product.Price" Label="Price" Type="number" Required="true" />
+
+        <MudFileUpload T="IBrowserFile" OnChange="@OnFileChange" />
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Color="Color.Secondary">Cancel</MudButton>
+        <MudButton OnClick="Save" Color="Color.Primary" Variant="Variant.Filled">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private Product _product = new();
+
+    private IBrowserFile? _imageFile;
+
+    private void OnFileChange(InputFileChangeEventArgs e)
+    {
+        _imageFile = e.File;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Save()
+    {
+        // You could return the product (with image file attached if needed)
+        MudDialog.Close(DialogResult.Ok(_product));
+    }
+}

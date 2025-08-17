@@ -1,0 +1,45 @@
+﻿@using BlazorWebPoc.Web.Client
+@using BlazorWebPoc.Web.Client.Services
+@using Microsoft.AspNetCore.Components.Authorization
+@using BlazorWebPoc.ApiService.Model.Request
+@using MudBlazor
+
+@page "/login"
+
+@inject NavigationManager NavigationManager
+@inject UserAccountServiceClient userAccountServiceClient
+@inject ISnackbar Snackbar
+@inject CustomAuthStateProvider AuthStateProvider
+
+
+<div class="loginform">
+    <h3>Login</h3>
+    <EditForm Model="@user" OnValidSubmit="HandleValidSubmit">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+        <MudTextField @bind-Value="user.Email" Label="Email" Required="true" Variant="Variant.Outlined" />
+        <MudTextField @bind-Value="user.Password" Label="Password" Type="password" Required="true" Variant="Variant.Outlined" />
+        <MudButton ButtonType="ButtonType.Submit" Class="btnStyle">Login</MudButton>
+    </EditForm>
+</div>
+
+@code {
+    private LoginRequest user = new LoginRequest();
+
+    private async Task HandleValidSubmit()
+    {
+        var result = await userAccountServiceClient.Login(user);
+
+        if (result != null && !string.IsNullOrEmpty(result.Token))
+        {
+            AuthStateProvider.SetToken(result.Token);
+            Snackbar.Add("Login successful!", Severity.Success);
+            NavigationManager.NavigateTo("/home");
+        }
+        else
+        {
+            Console.WriteLine("User login failed.");
+            Snackbar.Add("Login failed", Severity.Error);
+        }
+    }
+}

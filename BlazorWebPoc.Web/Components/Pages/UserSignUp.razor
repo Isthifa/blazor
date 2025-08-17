@@ -1,0 +1,68 @@
+﻿@page "/usersignup"
+@using BlazorWebPoc.ApiService.Model.Request
+@using BlazorWebPoc.Web.Client
+@using MudBlazor
+@inject NavigationManager NavigationManager
+
+@inject UserAccountServiceClient userAccountServiceClient
+
+<h3>User Registration</h3>
+
+<div class="loginform">
+    <EditForm Model="@user" OnValidSubmit="HandleValidSubmit">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+        <MudTextField @bind-Value="user.UserName" Label="User Name" Required="true" Variant="Variant.Outlined" />
+        <MudTextField @bind-Value="user.Email" Label="Email" Required="true" Variant="Variant.Outlined" />
+        <MudTextField @bind-Value="user.PhoneNumber" Label="Phone Number" Required="true" Variant="Variant.Outlined" />
+        <MudTextField @bind-Value="user.Password" Label="Password" Type="password" InputType="InputType.Password"  Variant="Variant.Outlined" Required="true" />
+        <MudTextField @bind-Value="user.ConfirmPassword" Label="Confirm Password" Type="password" Required="true" Variant="Variant.Outlined" />
+        <MudCheckBox  @bind-Value="CheckBox" Color="Color.Warning" Label="Admin?" CheckedIcon="@Icons.Material.Filled.Star" UncheckedIcon="@Icons.Material.Filled.StarOutline"></MudCheckBox>
+        <MudButton ButtonType="ButtonType.Submit" Class="btnStyle">Sign Up</MudButton>
+        <MudGrid>
+            <MudItem xs="12" Class="d-flex justify-end">
+                <MudButton ButtonType="ButtonType.Button" style="color:black;background-color:powderblue"
+                           OnClick="@(() => NavigationManager.NavigateTo("/login"))"
+                           Class="btnStyle">
+                    Already registered? Login
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+
+    </EditForm>
+</div>
+@code {
+    private RegisterAccount user = new RegisterAccount();
+
+    public string Text { get; set; }
+
+    public bool CheckBox { get; set; } = false;
+
+
+    private async Task HandleValidSubmit()
+    {
+        // Call the API service to register the user
+        if (CheckBox)
+        {
+            user.Role = ApiService.Model.RoleType.Admin;
+        }
+        else
+        {
+            user.Role = ApiService.Model.RoleType.User;
+        }
+        var result = await userAccountServiceClient.RegisterAccount(user);
+        // FIX: Check the result type for success, not the RegisterAccount type
+        // Assuming result is an HttpResponseMessage or similar
+        if(result != null)
+        {
+            // Handle successful registration (e.g., show a success message, redirect, etc.)
+            Console.WriteLine("User registered successfully.");
+            NavigationManager.NavigateTo("/login");
+        }
+        else
+        {
+            // Handle registration failure (e.g., show an error message)
+            Console.WriteLine("User registration failed.");
+        }
+    }
+}
