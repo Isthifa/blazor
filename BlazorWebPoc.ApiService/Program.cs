@@ -4,6 +4,7 @@ using BlazorWebPoc.ApiService.Service;
 using BlazorWebPoc.ApiService.Service.impl;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
@@ -17,6 +18,8 @@ builder.AddServiceDefaults();
 // Register your service implementations
 builder.Services.AddScoped<IUserAccountService, UserAccountServiceImpls>();
 builder.Services.AddScoped<IProductService, ProductServiceImpl>();
+builder.Services.AddHttpClient<ICvrService, CvrServiceImpl>();
+builder.Services.AddScoped<ICvrService, CvrServiceImpl>();
 
 // Add services to the container.
 builder.Services.AddProblemDetails();
@@ -100,6 +103,7 @@ builder.Services.AddAuthentication(op =>
     };
 });
 builder.Services.AddControllers();
+
 
 // Authorization (needed if you call app.UseAuthorization())
 builder.Services.AddAuthorization();

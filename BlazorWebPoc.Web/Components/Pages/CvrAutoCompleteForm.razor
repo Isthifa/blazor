@@ -1,0 +1,245 @@
+﻿// Components/CvrAutoCompleteForm.razor
+@using System.Text.Json
+@using System.Timers
+@using BlazorWebPoc.Web.Models
+@using MudBlazor
+@using BlazorWebPoc.Web.Client
+@inject CvrClient CvrClient
+@inject ISnackbar Snackbar
+
+<MudCard>
+    <MudCardContent>
+        <MudText Typo="Typo.h6" GutterBottom="true">Company Information Form</MudText>
+
+        <MudGrid>
+            <MudItem xs="12" sm="6">
+                <MudAutocomplete T="CvrAutoCompleteItem"
+                                 Label="CVR Number"
+                                 Value="selectedCvr"
+                                 ValueChanged="OnCvrSelected"
+                                 SearchFunc="@SearchCvr"
+                                 ToStringFunc="@(item => item?.Text ?? string.Empty)"
+                                 ShowProgressIndicator="true"
+                                 ProgressIndicatorColor="Color.Primary"
+                                 MinCharacters="3"
+                                 MaxItems="10"
+                                 Variant="Variant.Outlined"
+                                 HelperText="Enter at least 3 characters to search"
+                                 Culture="@danishCulture"
+                                 DebounceInterval="500">
+
+                    <ItemTemplate Context="item">
+                        <MudStack Row>
+                            <MudIcon Icon="Icons.Material.Filled.Business" Size="Size.Small" />
+                            <MudText>@((MarkupString)FormatDisplayText(item.Text))</MudText>
+                        </MudStack>
+                    </ItemTemplate>
+                    <ItemSelectedTemplate Context="item">
+                        <MudText>@((MarkupString)FormatDisplayText(item.Text))</MudText>
+                    </ItemSelectedTemplate>
+                </MudAutocomplete>
+            </MudItem>
+
+            <MudItem xs="12" sm="6">
+                <MudTextField @bind-Value="companyForm.Name"
+                              Label="Company Name"
+                              Variant="Variant.Outlined"
+                              ReadOnly="true" />
+            </MudItem>
+
+            <MudItem xs="12" sm="6">
+                <MudTextField @bind-Value="companyForm.Phone"
+                              Label="Phone Number"
+                              Variant="Variant.Outlined" />
+            </MudItem>
+
+            <MudItem xs="12" sm="6">
+                <MudTextField @bind-Value="companyForm.Email"
+                              Label="Email"
+                              Variant="Variant.Outlined" />
+            </MudItem>
+
+            <MudItem xs="12" sm="6">
+                <MudTextField @bind-Value="companyForm.Address"
+                              Label="Address"
+                              Variant="Variant.Outlined" />
+            </MudItem>
+
+            <MudItem xs="12" sm="3">
+                <MudTextField @bind-Value="companyForm.Zipcode"
+                              Label="Zipcode"
+                              Variant="Variant.Outlined" />
+            </MudItem>
+
+            <MudItem xs="12" sm="3">
+                <MudTextField @bind-Value="companyForm.City"
+                              Label="City"
+                              Variant="Variant.Outlined" />
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="Icons.Material.Filled.Save"
+                           OnClick="SaveForm">
+                    Save Company Information
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudCardContent>
+</MudCard>
+
+@code {
+    private CvrAutoCompleteItem? selectedCvr;
+    private CompanyForm companyForm = new();
+    private System.Timers.Timer? searchTimer;
+    private readonly System.Globalization.CultureInfo danishCulture = new("da-DK");
+    private TaskCompletionSource<IEnumerable<CvrAutoCompleteItem>>? searchTcs;
+
+
+    public class CompanyForm
+    {
+        public long CvrNumber { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Phone { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string Address { get; set; } = string.Empty;
+        public string City { get; set; } = string.Empty;
+        public string Zipcode { get; set; } = string.Empty;
+    }
+
+    private string FormatDisplayText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return text;
+
+        // Process Danish characters and format for display
+        var processed = ProcessDanishText(text);
+
+        // Split CVR and company name for better formatting
+        var parts = processed.Split(" - ", 2);
+        if (parts.Length == 2)
+        {
+            return $"<strong>{parts[0]}</strong> - {parts[1]}";
+        }
+
+        return processed;
+    }
+
+    private string ProcessDanishText(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return input;
+
+        try
+        {
+            // Handle common Unicode escape sequences
+            var processed = input
+                .Replace("\\u00e6", "æ")  // æ
+                .Replace("\\u00f8", "ø")  // ø
+                .Replace("\\u00e5", "å")  // å
+                .Replace("\\u00c6", "Æ")  // Æ
+                .Replace("\\u00d8", "Ø")  // Ø
+                .Replace("\\u00c5", "Å")  // Å
+                .Replace("\\u00e9", "é")  // é
+                .Replace("\\u00fc", "ü")  // ü
+                .Replace("\\u00f6", "ö")  // ö
+                .Replace("\\u00e4", "ä"); // ä
+
+            // Handle HTML entities
+            processed = System.Net.WebUtility.HtmlDecode(processed);
+
+            // Handle regex unescaping
+            processed = System.Text.RegularExpressions.Regex.Unescape(processed);
+
+            return processed.Trim();
+        }
+        catch
+        {
+            return input; // Return original if processing fails
+        }
+    }
+
+    private async Task<IEnumerable<CvrAutoCompleteItem>> SearchCvr(string value, CancellationToken token)
+    {
+        // searchTimer?.Stop();
+
+        // // Create a fresh TCS for this request
+        // searchTcs = new TaskCompletionSource<IEnumerable<CvrAutoCompleteItem>>();
+
+        // // Setup timer (500ms debounce)
+        // searchTimer = new System.Timers.Timer(500) { AutoReset = false };
+        // searchTimer.Elapsed += async (_, _) =>
+        // {
+        try
+        {
+            var results = await CvrClient.SearchCvrAsync(value, token);
+
+            // Process Danish characters in results
+            foreach (var result in results)
+            {
+                result.Text = ProcessDanishText(result.Text);
+                result.Data.Name = ProcessDanishText(result.Data.Name);
+                result.Data.Address = ProcessDanishText(result.Data.Address);
+                result.Data.City = ProcessDanishText(result.Data.City);
+            }
+
+            return results;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error searching CVR numbers: {ex.Message}", Severity.Error);
+            return new List<CvrAutoCompleteItem>();
+        }
+    }
+
+    private void OnCvrSelected(CvrAutoCompleteItem? selectedItem)
+    {
+        searchTimer?.Stop();
+        if (selectedItem?.Data != null)
+        {
+            // Auto-populate form fields with selected CVR data
+            companyForm.CvrNumber = selectedItem.Data.Vat ?? 0;
+            companyForm.Name = ProcessDanishText(selectedItem.Data.Name);
+            companyForm.Phone = selectedItem.Data.Phone;
+            companyForm.Email = selectedItem.Data.Email;
+            companyForm.Address = ProcessDanishText(selectedItem.Data.Address);
+            companyForm.City = ProcessDanishText(selectedItem.Data.City);
+            companyForm.Zipcode = selectedItem.Data.Zipcode;
+
+            Snackbar.Add("Virksomhedsoplysninger udfyldt!", Severity.Success);
+            StateHasChanged();
+        }
+    }
+
+    private async Task SaveForm()
+    {
+        if (string.IsNullOrWhiteSpace(companyForm.Name))
+        {
+            Snackbar.Add("Please select a company first", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            // Here you would typically send the form data to your API
+            // var response = await Http.PostAsJsonAsync("api/companies", companyForm);
+
+            Snackbar.Add("Company information saved successfully!", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error saving company information: {ex.Message}", Severity.Error);
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+    }
+
+    public void Dispose()
+    {
+        searchTimer?.Dispose();
+    }
+}

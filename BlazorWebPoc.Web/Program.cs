@@ -27,7 +27,11 @@ builder.Services.AddRazorComponents()
 builder.Services.AddOutputCache();
 
 // Register the HttpClient for ProductsClient with a base address.
-
+// Add this line after the existing HttpClient registrations
+builder.Services.AddHttpClient<CvrClient>(client =>
+{
+    client.BaseAddress = new("https+http://apiservice");
+});
 builder.Services.AddHttpClient<ProductsClient>(client =>
     {
         // This URL uses "https+http://" to indicate HTTPS is preferred over HTTP.
