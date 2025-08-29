@@ -6,6 +6,8 @@
 @using BlazorWebPoc.Web.Client
 @inject CvrClient CvrClient
 @inject ISnackbar Snackbar
+@inject ILogger<CvrAutoCompleteForm> Logger
+@implements IDisposable
 
 <MudCard>
     <MudCardContent>
@@ -19,14 +21,15 @@
                                  ValueChanged="OnCvrSelected"
                                  SearchFunc="@SearchCvr"
                                  ToStringFunc="@(item => item?.Text ?? string.Empty)"
-                                 ShowProgressIndicator="true"
+                                 ShowProgressIndicator="@isSearching"
                                  ProgressIndicatorColor="Color.Primary"
                                  MinCharacters="3"
                                  MaxItems="10"
                                  Variant="Variant.Outlined"
-                                 HelperText="Enter at least 3 characters to search"
+                                 HelperText="@GetHelperText()"
                                  Culture="@danishCulture"
-                                 DebounceInterval="500">
+                                 DebounceInterval="500"
+                                 Disabled="@isLoading">
 
                     <ItemTemplate Context="item">
                         <MudStack Row>
@@ -37,6 +40,26 @@
                     <ItemSelectedTemplate Context="item">
                         <MudText>@((MarkupString)FormatDisplayText(item.Text))</MudText>
                     </ItemSelectedTemplate>
+                    <NoItemsTemplate>
+                        <MudText Typo="Typo.body2" Class="pa-4">
+                            @if (isSearching)
+                            {
+                                <MudText>Searching...</MudText>
+                            }
+                            else if (!string.IsNullOrEmpty(lastErrorMessage))
+                            {
+                                <MudText Color="Color.Error">@lastErrorMessage</MudText>
+                            }
+                            else if (!string.IsNullOrEmpty(lastSearchValue) && lastSearchValue.Length >= 3)
+                            {
+                                <MudText>No companies found</MudText>
+                            }
+                            else
+                            {
+                                <MudText>Enter at least 3 characters to search</MudText>
+                            }
+                        </MudText>
+                    </NoItemsTemplate>
                 </MudAutocomplete>
             </MudItem>
 
@@ -44,62 +67,103 @@
                 <MudTextField @bind-Value="companyForm.Name"
                               Label="Company Name"
                               Variant="Variant.Outlined"
-                              ReadOnly="true" />
+                              ReadOnly="true"
+                              Disabled="@isLoading" />
             </MudItem>
 
             <MudItem xs="12" sm="6">
                 <MudTextField @bind-Value="companyForm.Phone"
                               Label="Phone Number"
-                              Variant="Variant.Outlined" />
+                              Variant="Variant.Outlined"
+                              Disabled="@isLoading" />
             </MudItem>
 
             <MudItem xs="12" sm="6">
                 <MudTextField @bind-Value="companyForm.Email"
                               Label="Email"
-                              Variant="Variant.Outlined" />
+                              Variant="Variant.Outlined"
+                              Disabled="@isLoading" />
             </MudItem>
 
             <MudItem xs="12" sm="6">
                 <MudTextField @bind-Value="companyForm.Address"
                               Label="Address"
-                              Variant="Variant.Outlined" />
+                              Variant="Variant.Outlined"
+                              Disabled="@isLoading" />
             </MudItem>
 
             <MudItem xs="12" sm="3">
                 <MudTextField @bind-Value="companyForm.Zipcode"
                               Label="Zipcode"
-                              Variant="Variant.Outlined" />
+                              Variant="Variant.Outlined"
+                              Disabled="@isLoading" />
             </MudItem>
 
             <MudItem xs="12" sm="3">
                 <MudTextField @bind-Value="companyForm.City"
                               Label="City"
-                              Variant="Variant.Outlined" />
+                              Variant="Variant.Outlined"
+                              Disabled="@isLoading" />
             </MudItem>
 
             <MudItem xs="12">
-                <MudButton Variant="Variant.Filled"
-                           Color="Color.Primary"
-                           StartIcon="Icons.Material.Filled.Save"
-                           OnClick="SaveForm">
-                    Save Company Information
-                </MudButton>
+                <MudStack Row Spacing="2">
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               StartIcon="Icons.Material.Filled.Save"
+                               OnClick="SaveForm"
+                               Loading="@isSaving"
+                               Disabled="@(!CanSave())">
+                        Save Company Information
+                    </MudButton>
+
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Secondary"
+                               StartIcon="Icons.Material.Filled.Clear"
+                               OnClick="ClearForm"
+                               Disabled="@isLoading">
+                        Clear
+                    </MudButton>
+                </MudStack>
             </MudItem>
         </MudGrid>
+
+        @if (lastSearchStats.HasValue)
+        {
+            <MudDivider Class="my-4" />
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                Last search: @lastSearchStats.Value.ResultCount results in @lastSearchStats.Value.Duration.TotalMilliseconds ms
+            </MudText>
+        }
     </MudCardContent>
 </MudCard>
 
 @code {
     private CvrAutoCompleteItem? selectedCvr;
     private CompanyForm companyForm = new();
-    private System.Timers.Timer? searchTimer;
     private readonly System.Globalization.CultureInfo danishCulture = new("da-DK");
-    private TaskCompletionSource<IEnumerable<CvrAutoCompleteItem>>? searchTcs;
 
+    // State management
+    private bool isSearching = false;
+    private bool isLoading = false;
+    private bool isSaving = false;
+    private bool isSelecting = false;
+
+    // Error handling
+    private string lastErrorMessage = string.Empty;
+    private string lastSearchValue = string.Empty;
+
+    // Performance tracking
+    private SearchStats? lastSearchStats;
+    private readonly Dictionary<string, CachedResult> searchCache = new();
+
+    // Constants
+    private const int CACHE_EXPIRY_MINUTES = 5;
+    private const int MAX_CACHE_SIZE = 50;
 
     public class CompanyForm
     {
-        public long CvrNumber { get; set; }
+        public long? CvrNumber { get; set; }
         public string Name { get; set; } = string.Empty;
         public string Phone { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
@@ -108,16 +172,41 @@
         public string Zipcode { get; set; } = string.Empty;
     }
 
+    private class CachedResult
+    {
+        public List<CvrAutoCompleteItem> Results { get; set; } = new();
+        public DateTime CachedAt { get; set; }
+        public string ErrorMessage { get; set; } = string.Empty;
+        public bool IsError { get; set; }
+    }
+
+    private struct SearchStats
+    {
+        public int ResultCount { get; set; }
+        public TimeSpan Duration { get; set; }
+    }
+
+    private string GetHelperText()
+    {
+        if (isSearching)
+            return "Searching for companies...";
+
+        if (!string.IsNullOrEmpty(lastErrorMessage))
+            return lastErrorMessage;
+
+        return "Enter at least 3 characters to search";
+    }
+
+    private bool CanSave() => !string.IsNullOrWhiteSpace(companyForm.Name) && !isLoading && !isSaving;
+
     private string FormatDisplayText(string text)
     {
         if (string.IsNullOrEmpty(text))
             return text;
 
-        // Process Danish characters and format for display
         var processed = ProcessDanishText(text);
-
-        // Split CVR and company name for better formatting
         var parts = processed.Split(" - ", 2);
+
         if (parts.Length == 2)
         {
             return $"<strong>{parts[0]}</strong> - {parts[1]}";
@@ -133,7 +222,6 @@
 
         try
         {
-            // Handle common Unicode escape sequences
             var processed = input
                 .Replace("\\u00e6", "æ")  // æ
                 .Replace("\\u00f8", "ø")  // ø
@@ -146,100 +234,259 @@
                 .Replace("\\u00f6", "ö")  // ö
                 .Replace("\\u00e4", "ä"); // ä
 
-            // Handle HTML entities
             processed = System.Net.WebUtility.HtmlDecode(processed);
-
-            // Handle regex unescaping
             processed = System.Text.RegularExpressions.Regex.Unescape(processed);
 
             return processed.Trim();
         }
-        catch
+        catch (Exception ex)
         {
-            return input; // Return original if processing fails
+            Logger.LogWarning("Error processing Danish text: {Error}", ex.Message);
+            return input;
+        }
+    }
+
+    private void CleanCache()
+    {
+        var expiredKeys = searchCache
+            .Where(kvp => DateTime.UtcNow - kvp.Value.CachedAt > TimeSpan.FromMinutes(CACHE_EXPIRY_MINUTES))
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        foreach (var key in expiredKeys)
+        {
+            searchCache.Remove(key);
+        }
+
+        // Keep cache size manageable
+        if (searchCache.Count > MAX_CACHE_SIZE)
+        {
+            var oldestKeys = searchCache
+                .OrderBy(kvp => kvp.Value.CachedAt)
+                .Take(searchCache.Count - MAX_CACHE_SIZE)
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            foreach (var key in oldestKeys)
+            {
+                searchCache.Remove(key);
+            }
         }
     }
 
     private async Task<IEnumerable<CvrAutoCompleteItem>> SearchCvr(string value, CancellationToken token)
     {
-        // searchTimer?.Stop();
+        lastErrorMessage = string.Empty;
 
-        // // Create a fresh TCS for this request
-        // searchTcs = new TaskCompletionSource<IEnumerable<CvrAutoCompleteItem>>();
+        if (isSelecting)
+        {
+            return new List<CvrAutoCompleteItem>();
+        }
 
-        // // Setup timer (500ms debounce)
-        // searchTimer = new System.Timers.Timer(500) { AutoReset = false };
-        // searchTimer.Elapsed += async (_, _) =>
-        // {
+        if (string.IsNullOrWhiteSpace(value) || value.Length < 3)
+        {
+            lastSearchValue = value;
+            return new List<CvrAutoCompleteItem>();
+        }
+
+        // Clean cache periodically
+        CleanCache();
+
+        // Check cache first
+        if (searchCache.TryGetValue(value, out var cached))
+        {
+            if (cached.IsError)
+            {
+                lastErrorMessage = cached.ErrorMessage;
+                return new List<CvrAutoCompleteItem>();
+            }
+            return cached.Results;
+        }
+
+        lastSearchValue = value;
+        isSearching = true;
+        StateHasChanged();
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
-            var results = await CvrClient.SearchCvrAsync(value, token);
+            Logger.LogDebug("Starting CVR search for: {Query}", value);
 
-            // Process Danish characters in results
-            foreach (var result in results)
+            var response = await CvrClient.SearchCvrAsync(value, token);
+
+            stopwatch.Stop();
+
+            if (!response.IsSuccess)
             {
-                result.Text = ProcessDanishText(result.Text);
-                result.Data.Name = ProcessDanishText(result.Data.Name);
-                result.Data.Address = ProcessDanishText(result.Data.Address);
-                result.Data.City = ProcessDanishText(result.Data.City);
+                lastErrorMessage = response.Message;
+                searchCache[value] = new CachedResult
+                {
+                    IsError = true,
+                    ErrorMessage = response.Message,
+                    CachedAt = DateTime.UtcNow
+                };
+
+                Logger.LogWarning("CVR search failed: {Message}", response.Message);
+                return new List<CvrAutoCompleteItem>();
             }
 
-            return results;
+            // Process Danish characters in results
+            var processedResults = new List<CvrAutoCompleteItem>();
+            foreach (var result in response.Results)
+            {
+                var processedResult = new CvrAutoCompleteItem
+                {
+                    Value = result.Value,
+                    Text = ProcessDanishText(result.Text),
+                    Data = new CvrSearchResult
+                    {
+                        Vat = result.Data.Vat,
+                        Name = ProcessDanishText(result.Data.Name),
+                        Phone = result.Data.Phone,
+                        Email = result.Data.Email,
+                        Address = ProcessDanishText(result.Data.Address),
+                        City = ProcessDanishText(result.Data.City),
+                        Zipcode = result.Data.Zipcode,
+                        Country = result.Data.Country
+                    }
+                };
+                processedResults.Add(processedResult);
+            }
+
+            // Cache successful results
+            searchCache[value] = new CachedResult
+            {
+                Results = processedResults,
+                CachedAt = DateTime.UtcNow
+            };
+
+            lastSearchStats = new SearchStats
+            {
+                ResultCount = processedResults.Count,
+                Duration = stopwatch.Elapsed
+            };
+
+            Logger.LogDebug("CVR search completed: {Count} results in {Duration}ms",
+                processedResults.Count, stopwatch.ElapsedMilliseconds);
+
+            return processedResults;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            Logger.LogDebug("CVR search cancelled for: {Query}", value);
+            return new List<CvrAutoCompleteItem>();
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"Error searching CVR numbers: {ex.Message}", Severity.Error);
+            stopwatch.Stop();
+            lastErrorMessage = "Search failed. Please try again.";
+
+            Logger.LogError(ex, "Error during CVR search for: {Query}", value);
+
+            searchCache[value] = new CachedResult
+            {
+                IsError = true,
+                ErrorMessage = lastErrorMessage,
+                CachedAt = DateTime.UtcNow
+            };
+
             return new List<CvrAutoCompleteItem>();
+        }
+        finally
+        {
+            isSearching = false;
+            StateHasChanged();
         }
     }
 
-    private void OnCvrSelected(CvrAutoCompleteItem? selectedItem)
+    private async Task OnCvrSelected(CvrAutoCompleteItem? selectedItem)
     {
-        searchTimer?.Stop();
-        if (selectedItem?.Data != null)
-        {
-            // Auto-populate form fields with selected CVR data
-            companyForm.CvrNumber = selectedItem.Data.Vat ?? 0;
-            companyForm.Name = ProcessDanishText(selectedItem.Data.Name);
-            companyForm.Phone = selectedItem.Data.Phone;
-            companyForm.Email = selectedItem.Data.Email;
-            companyForm.Address = ProcessDanishText(selectedItem.Data.Address);
-            companyForm.City = ProcessDanishText(selectedItem.Data.City);
-            companyForm.Zipcode = selectedItem.Data.Zipcode;
+        isSelecting = true;
 
-            Snackbar.Add("Virksomhedsoplysninger udfyldt!", Severity.Success);
+        try
+        {
+            if (selectedItem?.Data != null)
+            {
+                selectedCvr = selectedItem;
+                isLoading = true;
+                StateHasChanged();
+
+                // Simulate a small delay to show loading state
+                await Task.Delay(100);
+
+                // Auto-populate form fields
+               
+                companyForm.CvrNumber = selectedItem.Data.Vat;
+                companyForm.Name = selectedItem.Data.Name;
+                companyForm.Phone = selectedItem.Data.Phone;
+                companyForm.Email = selectedItem.Data.Email;
+                companyForm.Address = selectedItem.Data.Address;
+                companyForm.City = selectedItem.Data.City;
+                companyForm.Zipcode = selectedItem.Data.Zipcode;
+
+                Snackbar.Add("Company information loaded successfully!", Severity.Success);
+                Logger.LogInformation("Selected CVR: {CVR} - {Company}", selectedItem.Data.Vat, selectedItem.Data.Name);
+            }
+        }
+        finally
+        {
+            isLoading = false;
+            isSelecting = false;
             StateHasChanged();
         }
     }
 
     private async Task SaveForm()
     {
-        if (string.IsNullOrWhiteSpace(companyForm.Name))
+        if (!CanSave())
         {
             Snackbar.Add("Please select a company first", Severity.Warning);
             return;
         }
 
+        isSaving = true;
+        StateHasChanged();
+
         try
         {
+            // Simulate API call delay
+            await Task.Delay(1000);
+
             // Here you would typically send the form data to your API
             // var response = await Http.PostAsJsonAsync("api/companies", companyForm);
 
+            Logger.LogInformation("Saved company: {CVR} - {Name}", companyForm.CvrNumber, companyForm.Name);
             Snackbar.Add("Company information saved successfully!", Severity.Success);
         }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Error saving company information for CVR: {CVR}", companyForm.CvrNumber);
             Snackbar.Add($"Error saving company information: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isSaving = false;
+            StateHasChanged();
         }
     }
 
-    protected override void OnInitialized()
+    private void ClearForm()
     {
-        base.OnInitialized();
+        selectedCvr = null;
+        companyForm = new CompanyForm();
+        lastErrorMessage = string.Empty;
+        lastSearchValue = string.Empty;
+        lastSearchStats = null;
+
+        Logger.LogDebug("Form cleared");
+        Snackbar.Add("Form cleared", Severity.Info);
+        StateHasChanged();
     }
 
     public void Dispose()
     {
-        searchTimer?.Dispose();
+        searchCache.Clear();
+        Logger.LogDebug("CVR AutoComplete component disposed");
     }
 }

@@ -2,6 +2,7 @@
 using BlazorWebPoc.ApiService.Service;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using static BlazorWebPoc.ApiService.Service.impl.CvrServiceImpl;
 
 namespace BlazorWebPoc.ApiService.Controller
 {
@@ -18,21 +19,21 @@ namespace BlazorWebPoc.ApiService.Controller
         }
 
         [HttpGet("search")]
-        public async Task<ActionResult<List<CvrAutoCompleteItem>>> SearchCvr([FromQuery] string query)
+        public async Task<ActionResult<CvrSearchResponse>> SearchCvr([FromQuery] string query)
         {
             if (string.IsNullOrWhiteSpace(query) || query.Length < 3)
             {
                 return BadRequest("Query must be at least 3 characters long");
             }
 
-            var results = await _cvrService.SearchCvrAsync(query);
+            var results = await _cvrService.SearchCvrAsync(query).ConfigureAwait(false);    
             return Ok(results);
         }
 
         [HttpGet("details/{cvrNumber}")]
         public async Task<ActionResult<CvrSearchResult>> GetCvrDetails(string cvrNumber)
         {
-            var result = await _cvrService.GetCvrDetailsAsync(cvrNumber);
+            var result = await _cvrService.GetCvrDetailsAsync(cvrNumber).ConfigureAwait(false);
 
             if (result == null)
             {

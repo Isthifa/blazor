@@ -1,5 +1,6 @@
 ﻿using BlazorWebPoc.ApiService.Model;
 using Microsoft.AspNetCore.Mvc;
+using System.Net;
 using System.Text.Json;
 
 namespace BlazorWebPoc.ApiService.Service.impl
@@ -21,91 +22,160 @@ namespace BlazorWebPoc.ApiService.Service.impl
             _httpClient.DefaultRequestHeaders.Add("Accept-Charset", "UTF-8");
         }
 
-        public async Task<List<CvrAutoCompleteItem>> SearchCvrAsync(string query)
+        public async Task<CvrSearchResponse> SearchCvrAsync(string query)
         {
-            var results = new List<CvrAutoCompleteItem>();
+            var response = new CvrSearchResponse();
 
             try
             {
-                // Add delay to respect rate limit (1 req/sec for free tier)
+                // Validate input
+                if (string.IsNullOrWhiteSpace(query))
+                {
+                    response.Message = "Please enter a search query";
+                    return response;
+                }
+
+                // Clean query - remove spaces and special characters, keep only digits
+                var cleanQuery = System.Text.RegularExpressions.Regex.Replace(query.Trim(), @"[^\d]", "");
+
+                if (string.IsNullOrEmpty(cleanQuery))
+                {
+                    response.Message = "Please enter a valid CVR number (digits only)";
+                    return response;
+                }
+
+                if (cleanQuery.Length < 3)
+                {
+                    response.Message = "CVR number must be at least 3 digits long";
+                    return response;
+                }
+
+                if (cleanQuery.Length > 8)
+                {
+                    response.Message = "CVR number cannot exceed 8 digits";
+                    return response;
+                }
+
+                // Rate limiting - could be made configurable
                 await Task.Delay(1000);
-
-                // Clean query - remove spaces and special characters
-                var cleanQuery = System.Text.RegularExpressions.Regex.Replace(query, @"[^\d]", "");
-
-                if (string.IsNullOrEmpty(cleanQuery) || cleanQuery.Length < 3)
-                    return results;
 
                 var requestUrl = $"{CVR_API_BASE_URL}?search={cleanQuery}&country=dk&format=json";
                 _logger.LogInformation("Calling CVR API: {Url}", requestUrl);
 
-                var response = await _httpClient.GetAsync(requestUrl);
+                // Set timeout for the request
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-                if (response.IsSuccessStatusCode)
+                var httpResponse = await _httpClient.GetAsync(requestUrl, cts.Token);
+
+                if (!httpResponse.IsSuccessStatusCode)
                 {
-                    // Ensure we read the response with UTF-8 encoding
-                    //var responseBytes = await response.Content.ReadAsByteArrayAsync();
-                    //var jsonResponse = System.Text.Encoding.UTF8.GetString(responseBytes);
-                    var jsonResponse = await response.Content.ReadAsStringAsync();
-
-                    _logger.LogInformation("CVR API Response: {Response}", jsonResponse);
-
-                    var cvrResponse = JsonSerializer.Deserialize<CvrApiResponse>(jsonResponse, new JsonSerializerOptions
+                    response.Message = httpResponse.StatusCode switch
                     {
-                        PropertyNameCaseInsensitive = true,
-                        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-                    });
+                        HttpStatusCode.NotFound => "No company found with this CVR number",
+                        HttpStatusCode.TooManyRequests => "Too many requests. Please try again later",
+                        HttpStatusCode.Unauthorized => "API access denied. Please check your credentials",
+                        HttpStatusCode.BadRequest => "Invalid CVR number format",
+                        HttpStatusCode.InternalServerError => "CVR service is temporarily unavailable. Please try again later",
+                        HttpStatusCode.ServiceUnavailable => "CVR service is currently down for maintenance",
+                        _ => $"CVR service error (Status: {httpResponse.StatusCode}). Please try again later"
+                    };
 
-                    if (cvrResponse != null && cvrResponse.Vat!=null)
+                    _logger.LogWarning("CVR API returned status: {Status} for query: {Query}",
+                        httpResponse.StatusCode, cleanQuery);
+                    return response;
+                }
+
+                var jsonResponse = await httpResponse.Content.ReadAsStringAsync();
+
+                if (string.IsNullOrWhiteSpace(jsonResponse))
+                {
+                    response.Message = "Received empty response from CVR service";
+                    _logger.LogWarning("Empty response from CVR API for query: {Query}", cleanQuery);
+                    return response;
+                }
+
+                _logger.LogDebug("CVR API Response: {Response}", jsonResponse);
+
+                var cvrResponse = JsonSerializer.Deserialize<CvrApiResponse>(jsonResponse, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                });
+
+                if (cvrResponse?.Vat == null)
+                {
+                    response.Message = "No company found with this CVR number";
+                    _logger.LogInformation("No valid company data found for CVR: {Query}", cleanQuery);
+                    return response;
+                }
+
+                // Process and clean special characters
+                var companyName = ProcessDanishText(cvrResponse.Name ?? "Unknown Company");
+                var address = ProcessDanishText(cvrResponse.Address ?? "");
+                var city = ProcessDanishText(cvrResponse.City ?? "");
+
+                // Create display text with company info
+                var displayText = cvrResponse.Vat.ToString();
+                if (!string.IsNullOrEmpty(companyName) && companyName != "Unknown Company")
+                {
+                    displayText += $" - {companyName}";
+                }
+
+                var cvrItem = new CvrAutoCompleteItem
+                {
+                    Value = cvrResponse.Vat,
+                    Text = displayText.ToString(),
+                    Data = new CvrSearchResult
                     {
-                        // Process and clean special characters
-                        var companyName = ProcessDanishText(cvrResponse.Name ?? "");
-                        var address = ProcessDanishText(cvrResponse.Address ?? "");
-                        var city = ProcessDanishText(cvrResponse.City ?? "");
-
-                        // Create display text with company info
-                        var displayText = $"{cvrResponse.Vat}";
-                        if (!string.IsNullOrEmpty(companyName))
-                            displayText += $" - {companyName}";
-
-                        results.Add(new CvrAutoCompleteItem
-                        {
-                            Value = cvrResponse.Vat,
-                            Text = displayText,
-                            Data = new CvrSearchResult
-                            {
-                                Vat = cvrResponse.Vat,
-                                Name = companyName,
-                                Phone = cvrResponse.Phone ?? "",
-                                Email = cvrResponse.Email ?? "",
-                                Address = address,
-                                City = city,
-                                Zipcode = cvrResponse.Zipcode,
-                                Country = cvrResponse.Country
-                            }
-                        });
+                        Vat = cvrResponse.Vat,
+                        Name = companyName,
+                        Phone = cvrResponse.Phone ?? "",
+                        Email = cvrResponse.Email ?? "",
+                        Address = address,
+                        City = city,
+                        Zipcode = cvrResponse.Zipcode ?? "",
+                        Country = cvrResponse.Country ?? "DK"
                     }
-                }
-                else
-                {
-                    _logger.LogWarning("CVR API returned status: {Status}, Response: {Response}",
-                        response.StatusCode, await response.Content.ReadAsStringAsync());
-                }
+                };
+
+                response.Results.Add(cvrItem);
+                response.IsSuccess = true;
+                response.Message = $"Found {response.Results.Count} result(s)";
+
+                _logger.LogInformation("Successfully found CVR data for: {CVR} - {Company}",
+                    cvrResponse.Vat, companyName);
+            }
+            catch (OperationCanceledException)
+            {
+                response.Message = "Request timed out. CVR service may be slow or unavailable";
+                _logger.LogWarning("CVR API request timed out for query: {Query}", query);
             }
             catch (HttpRequestException ex)
             {
+                response.Message = "Unable to connect to CVR service. Please check your internet connection";
                 _logger.LogError(ex, "HTTP error calling CVR API for query: {Query}", query);
             }
             catch (JsonException ex)
             {
+                response.Message = "Received invalid response from CVR service. Please try again";
                 _logger.LogError(ex, "JSON parsing error for CVR API response, query: {Query}", query);
             }
             catch (Exception ex)
             {
+                response.Message = "An unexpected error occurred. Please try again later";
                 _logger.LogError(ex, "Unexpected error searching CVR numbers for query: {Query}", query);
             }
 
-            return results;
+            return response;
+        }
+
+        // Response wrapper class
+        public class CvrSearchResponse
+        {
+            public List<CvrAutoCompleteItem> Results { get; set; } = new();
+            public bool IsSuccess { get; set; } = false;
+            public string Message { get; set; } = string.Empty;
+            public int ResultCount => Results.Count;
         }
 
         private static string ProcessDanishText(string input)
